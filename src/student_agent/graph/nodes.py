@@ -102,7 +102,7 @@ async def policy_node(state: CaseGraphState) -> dict[str, Any]:
                 "get_policy",
                 case_id=state["case_id"],
                 actor="policy-agent",
-                order_id=order_ids[0],
+                policy_version=str(state["case"].get("policy_version", "")),
             )
         except (RuntimeError, ValueError):
             pass
