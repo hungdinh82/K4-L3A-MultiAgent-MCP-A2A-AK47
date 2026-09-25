@@ -25,8 +25,12 @@ def _text(value: Any) -> str:
 
 async def coordinator_node(state: CaseGraphState) -> dict[str, Any]:
     case = state["case"]
+    request = case.get("customer_request", {})
+    if not isinstance(request, dict):
+        request = {}
     entities = {
-        "order_ids": _values(case, "order_id", "order_ids"),
+        "order_ids": _values(case, "order_id", "order_ids")
+        or _values(request, "claimed_order_id", "order_id", "order_ids"),
         "item_ids": _values(case, "item_id", "item_ids", "order_item_id"),
         "seller_ids": _values(case, "seller_id", "seller_ids"),
         "payment_references": _values(
