@@ -16,6 +16,5 @@ class CaseGraphState(TypedDict, total=False):
     entities: dict[str, list[str]]
     evidence: dict[str, dict[str, Any]]
     evidence_refs: list[str]
-    primary_issue: str
-    resolution_action: str
+    decision: dict[str, Any]
     output: dict[str, Any]
