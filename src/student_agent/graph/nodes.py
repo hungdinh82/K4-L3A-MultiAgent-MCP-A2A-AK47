@@ -17,6 +17,26 @@ def _values(case: dict[str, Any], *names: str) -> list[str]:
     return values
 
 
+def _append(values: list[str], value: Any) -> None:
+    if isinstance(value, str) and value and value not in values:
+        values.append(value)
+
+
+def _add_evidence_entities(entities: dict[str, list[str]], evidence: dict[str, Any]) -> None:
+    """Copy only identifiers present in the server evidence into output scope."""
+    data = evidence.get("data")
+    rows = data if isinstance(data, list) else [data]
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        _append(entities["order_ids"], row.get("order_id"))
+        _append(entities["item_ids"], row.get("order_item_id"))
+        _append(entities["seller_ids"], row.get("seller_id"))
+        _append(entities["payment_references"], row.get("payment_id"))
+        _append(entities["payment_references"], row.get("payment_reference"))
+        _append(entities["shipment_ids"], row.get("shipment_id"))
+
+
 async def coordinator_node(state: CaseGraphState) -> dict[str, Any]:
     case = state["case"]
     request = case.get("customer_request", {})
@@ -51,6 +71,7 @@ async def _collect(
         return {}
     evidence_by_tool = dict(state.get("evidence", {}))
     refs = list(state.get("evidence_refs", []))
+    entities = {name: list(ids) for name, ids in state["entities"].items()}
     for tool in tools:
         try:
             evidence = await state["gateway"].call(
@@ -62,6 +83,7 @@ async def _collect(
             continue
         ref = evidence["evidence_ref"]
         evidence_by_tool[tool] = evidence
+        _add_evidence_entities(entities, evidence)
         if ref not in refs:
             refs.append(ref)
         state["trace"].emit(
@@ -76,7 +98,7 @@ async def _collect(
             actor=actor,
             target="policy-agent", evidence_refs=[ref],
         )
-    return {"evidence": evidence_by_tool, "evidence_refs": refs}
+    return {"entities": entities, "evidence": evidence_by_tool, "evidence_refs": refs}
 
 
 async def order_node(state: CaseGraphState) -> dict[str, Any]:
@@ -86,7 +108,11 @@ async def order_node(state: CaseGraphState) -> dict[str, Any]:
 
 
 async def payment_node(state: CaseGraphState) -> dict[str, Any]:
-    return await _collect(state, actor="payment-agent", tools=("get_order_payments",))
+    return await _collect(
+        state,
+        actor="payment-agent",
+        tools=("get_order_payments", "get_payment_timeline", "get_refund_timeline"),
+    )
 
 
 async def shipment_node(state: CaseGraphState) -> dict[str, Any]:
