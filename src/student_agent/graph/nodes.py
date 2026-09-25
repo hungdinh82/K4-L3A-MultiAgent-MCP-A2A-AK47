@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from ..policy import decide
+from ..verifier import emit_verification, repair_output, verify_output
 from .state import CaseGraphState
 
 
@@ -13,14 +15,6 @@ def _values(case: dict[str, Any], *names: str) -> list[str]:
             if isinstance(item, str) and item and item not in values:
                 values.append(item)
     return values
-
-
-def _text(value: Any) -> str:
-    if isinstance(value, dict):
-        return " ".join(_text(item) for item in value.values())
-    if isinstance(value, list):
-        return " ".join(_text(item) for item in value)
-    return str(value).lower()
 
 
 async def coordinator_node(state: CaseGraphState) -> dict[str, Any]:
@@ -100,60 +94,66 @@ async def shipment_node(state: CaseGraphState) -> dict[str, Any]:
 
 
 async def policy_node(state: CaseGraphState) -> dict[str, Any]:
-    text = _text(state["case"]) + " " + _text(
-        [item.get("data") for item in state.get("evidence", {}).values()]
-    )
-    if "duplicate" in text:
-        issue, action = "duplicate_charge", "review_duplicate_charge"
-    elif "refund" in text and ("pending" in text or "await" in text):
-        issue, action = "refund_pending", "monitor_refund"
-    elif "cancel" in text and "paid" in text:
-        issue, action = "canceled_order_paid", "issue_refund"
-    elif "late" in text or "delay" in text:
-        issue, action = "late_delivery_logistics", "escalate_delivery"
-    else:
-        issue, action = "insufficient_evidence", "collect_missing_evidence"
+    evidence = dict(state.get("evidence", {}))
+    order_ids = state["entities"]["order_ids"]
+    if order_ids:
+        try:
+            policy_evidence = await state["gateway"].call(
+                "get_policy",
+                case_id=state["case_id"],
+                actor="policy-agent",
+                order_id=order_ids[0],
+            )
+        except (RuntimeError, ValueError):
+            pass
+        else:
+            ref = policy_evidence["evidence_ref"]
+            evidence["get_policy"] = policy_evidence
+            state["trace"].emit(
+                case_id=state["case_id"],
+                event_type="tool_result_consumed",
+                actor="policy-agent",
+                tool_name="get_policy",
+                evidence_refs=[ref],
+            )
+
+    decision = decide(state["case"], evidence)
+    refs = list(dict.fromkeys([*state.get("evidence_refs", []), *decision["evidence_refs"]]))
     state["trace"].emit(
         case_id=state["case_id"],
         event_type="policy_decided",
         actor="policy-agent",
-        decision_code=issue, evidence_refs=state.get("evidence_refs", []),
+        decision_code=decision["assessment"]["primary_issue"],
+        evidence_refs=decision["evidence_refs"],
     )
-    return {"primary_issue": issue, "resolution_action": action}
+    state["trace"].emit(
+        case_id=state["case_id"],
+        event_type="handoff",
+        actor="policy-agent",
+        target="verifier-agent",
+        evidence_refs=decision["evidence_refs"],
+    )
+    return {"evidence": evidence, "evidence_refs": refs, "decision": decision}
 
 
 async def verifier_node(state: CaseGraphState) -> dict[str, Any]:
-    issue = state["primary_issue"]
-    refs = list(dict.fromkeys(state.get("evidence_refs", [])))
-    output = {
+    draft = {
         "schema_version": "day09-l3a-output-v2",
         "case_id": state["case_id"],
-        "assessment": {
-            "primary_issue": issue,
-            "case_status": (
-                "action_required" if issue != "insufficient_evidence" else "needs_investigation"
-            ),
-            "confidence": (
-                min(0.95, 0.35 + 0.12 * len(refs))
-                if issue != "insufficient_evidence"
-                else 0.0
-            ),
-        },
         "affected_entities": state["entities"],
-        "root_cause_analysis": {"ranked_causes": [], "responsible_parties": []},
-        "evidence_refs": refs,
-        "data_conflicts": [],
-        "financial_resolution": {
-            "currency": "BRL",
-            "recommended_refund_brl": 0,
-            "refund_lines": [],
-        },
-        "resolution_actions": [state["resolution_action"]],
+        **state["decision"],
     }
-    state["trace"].emit(
-        case_id=state["case_id"],
-        event_type="verification_completed",
-        actor="verifier-agent",
-        decision_code="schema_ready", evidence_refs=refs,
+    output = repair_output(
+        draft,
+        case=state["case"],
+        evidence=state.get("evidence", {}).values(),
     )
+    report = verify_output(
+        output,
+        case=state["case"],
+        evidence=state.get("evidence", {}).values(),
+        contracts=state["trace"].contracts,
+        consumed_refs=state.get("evidence_refs", []),
+    )
+    emit_verification(state["trace"], report, evidence_refs=output["evidence_refs"])
     return {"output": output}
