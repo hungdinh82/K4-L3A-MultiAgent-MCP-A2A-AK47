@@ -97,11 +97,7 @@ class EvidenceGateway:
 
         payload = {"case_id": case_id, **arguments}
         result = await self._call_with_timeout_retry(tool_name, payload)
-        # mcp>=2 exposes snake_case ``is_error``; keep camelCase for older clients/tests.
-        is_error = getattr(result, "is_error", None)
-        if is_error is None:
-            is_error = getattr(result, "isError", False)
-        if is_error:
+        if getattr(result, "isError", getattr(result, "is_error", False)):
             message = " ".join(
                 block.text for block in result.content if getattr(block, "text", None)
             )
