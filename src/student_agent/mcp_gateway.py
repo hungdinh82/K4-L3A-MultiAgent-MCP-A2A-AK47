@@ -95,7 +95,7 @@ class EvidenceGateway:
 
         payload = {"case_id": case_id, **arguments}
         result = await self._call_with_timeout_retry(tool_name, payload)
-        if result.isError:
+        if getattr(result, "isError", getattr(result, "is_error", False)):
             message = " ".join(
                 block.text for block in result.content if getattr(block, "text", None)
             )
