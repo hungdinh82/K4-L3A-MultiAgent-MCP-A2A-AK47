@@ -18,8 +18,10 @@ CASE_ID_PATTERN = re.compile(r"^[A-Z0-9][A-Z0-9_-]{2,63}$")
 # can be replaced after MCP tool discovery if the competition publishes other names.
 DEFAULT_TOOL_PERMISSIONS: dict[str, frozenset[str]] = {
     "order-agent": frozenset({"get_order"}),
-    "order-item-agent": frozenset({"get_order", "get_order_items", "get_seller"}),
-    "payment-agent": frozenset({"get_order_payments", "get_refunds"}),
+    "order-item-agent": frozenset({"get_order", "get_order_items", "get_sellers"}),
+    "payment-agent": frozenset(
+        {"get_order_payments", "get_payment_timeline", "get_refund_timeline"}
+    ),
     "shipment-agent": frozenset({"get_shipment_summary"}),
     "policy-agent": frozenset({"get_policy"}),
 }
@@ -95,7 +97,11 @@ class EvidenceGateway:
 
         payload = {"case_id": case_id, **arguments}
         result = await self._call_with_timeout_retry(tool_name, payload)
-        if result.isError:
+        # mcp>=2 exposes snake_case ``is_error``; keep camelCase for older clients/tests.
+        is_error = getattr(result, "is_error", None)
+        if is_error is None:
+            is_error = getattr(result, "isError", False)
+        if is_error:
             message = " ".join(
                 block.text for block in result.content if getattr(block, "text", None)
             )

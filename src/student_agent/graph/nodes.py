@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from ..policy import decide
-from ..verifier import emit_verification, repair_output, verify_output
+from ..verifier import emit_verification, evidence_entity_scope, repair_output, verify_output
 from .state import CaseGraphState
 
 
@@ -86,7 +86,11 @@ async def order_node(state: CaseGraphState) -> dict[str, Any]:
 
 
 async def payment_node(state: CaseGraphState) -> dict[str, Any]:
-    return await _collect(state, actor="payment-agent", tools=("get_order_payments",))
+    return await _collect(
+        state,
+        actor="payment-agent",
+        tools=("get_order_payments", "get_payment_timeline", "get_refund_timeline"),
+    )
 
 
 async def shipment_node(state: CaseGraphState) -> dict[str, Any]:
@@ -95,14 +99,14 @@ async def shipment_node(state: CaseGraphState) -> dict[str, Any]:
 
 async def policy_node(state: CaseGraphState) -> dict[str, Any]:
     evidence = dict(state.get("evidence", {}))
-    order_ids = state["entities"]["order_ids"]
-    if order_ids:
+    policy_version = state["case"].get("policy_version")
+    if isinstance(policy_version, str) and policy_version:
         try:
             policy_evidence = await state["gateway"].call(
                 "get_policy",
                 case_id=state["case_id"],
                 actor="policy-agent",
-                order_id=order_ids[0],
+                policy_version=policy_version,
             )
         except (RuntimeError, ValueError):
             pass
@@ -136,11 +140,22 @@ async def policy_node(state: CaseGraphState) -> dict[str, Any]:
     return {"evidence": evidence, "evidence_refs": refs, "decision": decision}
 
 
+def _affected_entities(state: CaseGraphState) -> dict[str, list[str]]:
+    """Case-provided ids plus order/item/seller ids proven by this case's MCP evidence."""
+    entities = {name: list(ids) for name, ids in state["entities"].items()}
+    scope = evidence_entity_scope(state.get("evidence", {}).values())
+    for name in ("order_ids", "item_ids", "seller_ids"):
+        for entity_id in sorted(scope[name]):
+            if entity_id not in entities[name]:
+                entities[name].append(entity_id)
+    return entities
+
+
 async def verifier_node(state: CaseGraphState) -> dict[str, Any]:
     draft = {
         "schema_version": "day09-l3a-output-v2",
         "case_id": state["case_id"],
-        "affected_entities": state["entities"],
+        "affected_entities": _affected_entities(state),
         **state["decision"],
     }
     output = repair_output(
